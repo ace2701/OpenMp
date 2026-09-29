@@ -150,7 +150,10 @@ int main(int argc, char **argv)
         auto stop = high_resolution_clock::now();
         duration<double, std::milli> ms = stop - start;
 
-        printGeneration(reasons, neighbours, N, gen, generations, survive, born, lonely, crowded, ms.count());
+        if (N <= 60)
+            printGeneration(reasons, neighbours, N, gen, generations, survive, born, lonely, crowded, ms.count());
+        else
+            printf("Generasi %d / %d (grid %d x %d, %d thread): %.3f ms\n", gen, generations, N, N, THREADS, ms.count());
 
         char *tmp = c_m;
         c_m = n_m;
