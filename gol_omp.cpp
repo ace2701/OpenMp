@@ -1,114 +1,168 @@
 // Compilation: g++ -fopenmp -pedantic -pipe -O3 -march=native gol_omp.cpp -o gol_omp
-// Run: ./gol_omp.exe [1], where [1] is the  matrix size power of 2.
-// E.g.: ./gol_omp.exe 15 launches calculations on 2^15 x 2^15 matrix
+// Run: ./gol_omp.exe [1] [2] [3], where [1] is the grid size, [2] is the number of generations, [3] is the delay per generation in ms.
+// E.g.: ./gol_omp.exe 20 50 300 launches a 20 x 20 grid for 50 generations with 300 ms delay between generations
 
 #include <stdlib.h>
 #include <stdio.h>
 #include <chrono>
+#include <thread>
 #include <omp.h>
 
 using std::chrono::duration;
-using std::chrono::duration_cast;
 using std::chrono::high_resolution_clock;
-using std::chrono::milliseconds;
 
-#define THREADS 12
+#define THREADS 4
 
-// Game of life algorithm
-char analyzeCell(char *c_m, int N, int i, int j)
+enum Reason { EMPTY, SURVIVE, LONELY, CROWDED, BORN };
+
+int countAlive(char *m, int N, int i, int j)
 {
-    int alive_neighbours = 0, dead_neighbours = 0;
+    int alive = 0;
 
-    c_m[(i - 1) * N + (j - 1)] == '.' ? dead_neighbours++ : alive_neighbours++;
-    c_m[(i - 1) * N + j] == '.' ? dead_neighbours++ : alive_neighbours++;
-    c_m[(i - 1) * N + (j + 1)] == '.' ? dead_neighbours++ : alive_neighbours++;
-    c_m[i * N + (j + 1)] == '.' ? dead_neighbours++ : alive_neighbours++;
-    c_m[(i + 1) * N + (j + 1)] == '.' ? dead_neighbours++ : alive_neighbours++;
-    c_m[(i + 1) * N + j] == '.' ? dead_neighbours++ : alive_neighbours++;
-    c_m[(i + 1) * N + (j - 1)] == '.' ? dead_neighbours++ : alive_neighbours++;
-    c_m[i * N + (j - 1)] == '.' ? dead_neighbours++ : alive_neighbours++;
+    for (int di = -1; di <= 1; di++)
+        for (int dj = -1; dj <= 1; dj++)
+            if ((di || dj) && m[((i + di + N) % N) * N + (j + dj + N) % N] == 'X')
+                alive++;
 
-    if (alive_neighbours < 2)
-        return '.';
-
-    else if (alive_neighbours > 3)
-        return '.';
-
-    else if (c_m[i * N + j] == 'X' && (alive_neighbours == 2 || alive_neighbours == 3))
-        return 'X';
-
-    else if (c_m[i * N + j] == '.' && alive_neighbours == 3)
-        return 'X';
-
-    else
-        return 'X';
+    return alive;
 }
 
-// Initialize matrix
+// Game of life algorithm
+char analyzeCell(char *m, int N, int i, int j, char *reason, char *neighbours)
+{
+    int alive = countAlive(m, N, i, j);
+    bool isAlive = m[i * N + j] == 'X';
+
+    *neighbours = alive;
+
+    if (isAlive && alive < 2)
+    {
+        *reason = LONELY;
+        return '.';
+    }
+    if (isAlive && alive > 3)
+    {
+        *reason = CROWDED;
+        return '.';
+    }
+    if (isAlive)
+    {
+        *reason = SURVIVE;
+        return 'X';
+    }
+    if (alive == 3)
+    {
+        *reason = BORN;
+        return 'X';
+    }
+
+    *reason = EMPTY;
+    return '.';
+}
+
 void initMatrix(char *m, int N)
 {
     for (int i = 0; i < N; i++)
         for (int j = 0; j < N; j++)
-            m[i * N + j] = rand() % 2 > 0 ? '.' : 'X';
+            m[i * N + j] = rand() % 4 == 0 ? 'X' : '.';
 }
 
-// Print matrix state
-void printMatrix(char *m, int N)
+void printGeneration(char *reasons, char *neighbours, int N, int gen, int total,
+                     int survive, int born, int lonely, int crowded, double ms)
 {
-    printf("\n");
+    printf("\033[H\033[2J");
+    printf("Generasi %d / %d   (grid %d x %d, %d thread, %.3f ms)\n\n", gen, total, N, N, THREADS, ms);
 
-    for (int i = 1; i < N - 1; i++)
+    for (int i = 0; i < N; i++)
     {
-        for (int j = 1; j < N - 1; j++)
-            printf("%c ", m[i * N + j]);
+        for (int j = 0; j < N; j++)
+        {
+            switch (reasons[i * N + j])
+            {
+            case SURVIVE: printf("\033[32m██\033[0m"); break;
+            case BORN:    printf("\033[36m██\033[0m"); break;
+            case LONELY:  printf("\033[31m▒▒\033[0m"); break;
+            case CROWDED: printf("\033[33m▒▒\033[0m"); break;
+            default:      printf("\033[90m· \033[0m"); break;
+            }
+        }
+        printf("\n");
+    }
+
+    printf("\n\033[32m██\033[0m bertahan: %d   ", survive);
+    printf("\033[36m██\033[0m berkembang biak: %d   ", born);
+    printf("\033[31m▒▒\033[0m mati kesepian: %d   ", lonely);
+    printf("\033[33m▒▒\033[0m mati kepadatan: %d\n\n", crowded);
+
+    const char *text[] = {"", "BERTAHAN, tetangga hidup %d (2 atau 3)",
+                          "MATI karena kesepian, tetangga hidup %d (< 2)",
+                          "MATI karena kepadatan, tetangga hidup %d (> 3)",
+                          "HIDUP karena berkembang biak, tetangga hidup %d (tepat 3)"};
+    bool shown[5] = {true, false, false, false, false};
+
+    for (int k = 0; k < N * N; k++)
+    {
+        int r = reasons[k];
+        if (shown[r])
+            continue;
+        shown[r] = true;
+        printf("Sel (%d,%d): ", k / N, k % N);
+        printf(text[r], neighbours[k]);
         printf("\n");
     }
 }
 
 int main(int argc, char **argv)
 {
-    // Matrix size
-    int N = 1 << atoi(argv[1]);
+    int N = argc > 1 ? atoi(argv[1]) : 20;
+    int generations = argc > 2 ? atoi(argv[2]) : 50;
+    int delay = argc > 3 ? atoi(argv[3]) : 300;
 
-    // Matrix size in bytes
-    size_t bytes = N * N * sizeof(char);
+    char *c_m = (char *)malloc(N * N);
+    char *n_m = (char *)malloc(N * N);
+    char *reasons = (char *)malloc(N * N);
+    char *neighbours = (char *)malloc(N * N);
 
-    // Host pointers to current matrix and new matrix
-    char *c_m, *n_m;
-
-    // Allocatee host memory
-    c_m = (char *)malloc(bytes);
-    n_m = (char *)malloc(bytes);
-
-    // Initialize matrix
+    srand(1);
     initMatrix(c_m, N);
 
-    // Print initial state
-    // printMatrix(c_m, N);
+    for (int gen = 1; gen <= generations; gen++)
+    {
+        int survive = 0, born = 0, lonely = 0, crowded = 0;
 
-    // Execution time - start
-    auto start = high_resolution_clock::now();
+        auto start = high_resolution_clock::now();
 
-// Launch Game of Life (CPU)
-#pragma omp parallel for num_threads(THREADS)
-    for (int i = 1; i < N - 1; i++)
-        for (int j = 1; j < N - 1; j++)
-            n_m[i * N + j] = analyzeCell(c_m, N, i, j);
+#pragma omp parallel for collapse(2) num_threads(THREADS) reduction(+ : survive, born, lonely, crowded)
+        for (int i = 0; i < N; i++)
+            for (int j = 0; j < N; j++)
+            {
+                n_m[i * N + j] = analyzeCell(c_m, N, i, j, &reasons[i * N + j], &neighbours[i * N + j]);
 
-    // Execution time - stop
-    auto stop = high_resolution_clock::now();
+                switch (reasons[i * N + j])
+                {
+                case SURVIVE: survive++; break;
+                case BORN:    born++; break;
+                case LONELY:  lonely++; break;
+                case CROWDED: crowded++; break;
+                }
+            }
 
-    // Print final state
-    // printMatrix(n_m, N);
+        auto stop = high_resolution_clock::now();
+        duration<double, std::milli> ms = stop - start;
 
-    // Getting number of milliseconds as a double.
-    duration<double, std::milli> ms_double = stop - start;
+        printGeneration(reasons, neighbours, N, gen, generations, survive, born, lonely, crowded, ms.count());
 
-    printf("\nCompleted successfully!\n");
-    printf("analyzeCell() execution time on the CPU: %f ms\n", ms_double.count());
+        char *tmp = c_m;
+        c_m = n_m;
+        n_m = tmp;
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+    }
 
     free(c_m);
     free(n_m);
+    free(reasons);
+    free(neighbours);
 
     return 0;
 }
